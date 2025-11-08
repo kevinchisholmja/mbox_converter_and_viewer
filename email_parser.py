@@ -1,273 +1,293 @@
 """
 Email Parser Module
-Handles all MBOX parsing and email data extraction
+Handles MBOX parsing and email data extraction with streaming support for large files.
 """
 
 import mailbox
-import re
-from email.header import decode_header
+import logging
 from pathlib import Path
+from typing import List, Dict, Optional, Iterator
+from email.message import Message
+
+import config
+import utils
+
+logger = logging.getLogger(__name__)
+
 
 class EmailParser:
-    """Parses MBOX files and extracts email data."""
-    
-    def __init__(self, mbox_path):
+    """
+    Parses MBOX files and extracts email data.
+    Supports streaming for memory-efficient processing of large mailboxes.
+    """
+
+    def __init__(self, mbox_path: str):
         """
         Initialize the parser with an MBOX file path.
-        
+
         Args:
             mbox_path: Path to the MBOX file
         """
         self.mbox_path = mbox_path
         self.mbox = None
-        self.output_dir = None
-        
-    def decode_mime_words(self, s):
+        self.total_emails = 0
+
+    def get_email_count(self) -> int:
         """
-        Decode MIME encoded-word strings (like =?UTF-8?Q?...?=).
-        
-        Args:
-            s: String to decode
-            
+        Get total number of emails in the MBOX file.
+
         Returns:
-            Decoded string
+            Number of emails, or 0 if file cannot be opened
         """
-        if not s:
-            return ""
-        
-        decoded_fragments = []
-        for fragment, encoding in decode_header(s):
-            if isinstance(fragment, bytes):
-                try:
-                    decoded_fragments.append(
-                        fragment.decode(encoding or 'utf-8', errors='ignore')
-                    )
-                except:
-                    decoded_fragments.append(
-                        fragment.decode('utf-8', errors='ignore')
-                    )
-            else:
-                decoded_fragments.append(fragment)
-        
-        return ''.join(decoded_fragments)
-    
-    def extract_name_from_email(self, email_str):
+        try:
+            mbox = mailbox.mbox(self.mbox_path)
+            count = len(mbox)
+            mbox.close()
+            return count
+        except Exception as e:
+            logger.error(f"Failed to count emails in MBOX: {e}")
+            return 0
+
+    def parse_all_emails(self) -> List[Dict]:
         """
-        Extract just the name from an email address.
-        
-        Examples:
-            "John Doe <john@example.com>" -> "John Doe"
-            "john@example.com" -> "john@example.com"
-        
-        Args:
-            email_str: Email string to parse
-            
+        Parse all emails from the MBOX file.
+        For large files, consider using parse_emails_streaming() instead.
+
         Returns:
-            Name or email address
+            List of email data dictionaries
         """
-        if not email_str:
-            return "Unknown"
-        
-        # Pattern: "Name <email@domain.com>"
-        match = re.match(r'^"?([^"<]+)"?\s*<(.+)>$', email_str.strip())
-        if match:
-            return match.group(1).strip()
-        
-        return email_str.strip()
-    
-    def get_email_body(self, msg):
+        emails_data = []
+
+        for email_data in self.parse_emails_streaming():
+            emails_data.append(email_data)
+
+        return emails_data
+
+    def parse_emails_streaming(self) -> Iterator[Dict]:
+        """
+        Stream emails from MBOX file one at a time.
+        Memory-efficient for large mailboxes (>1GB, >10k emails).
+
+        Yields:
+            Email data dictionaries one at a time
+        """
+        try:
+            self.mbox = mailbox.mbox(self.mbox_path)
+            self.total_emails = len(self.mbox)
+            logger.info(f"Found {self.total_emails} emails in MBOX file")
+        except FileNotFoundError:
+            logger.error(f"MBOX file not found: {self.mbox_path}")
+            return
+        except PermissionError:
+            logger.error(f"Permission denied reading MBOX file: {self.mbox_path}")
+            return
+        except Exception as e:
+            logger.error(f"Error opening MBOX file: {e}")
+            return
+
+        for idx, message in enumerate(self.mbox, 1):
+            try:
+                email_data = self._parse_single_email(message, idx)
+
+                # Progress indicator
+                if idx % config.PROGRESS_UPDATE_INTERVAL == 0 or idx == self.total_emails:
+                    progress = (idx / self.total_emails) * 100
+                    subject_preview = email_data['subject'][:50]
+                    logger.info(
+                        f"Processing: {idx}/{self.total_emails} "
+                        f"({progress:.1f}%) - {subject_preview}"
+                    )
+
+                yield email_data
+
+            except Exception as e:
+                logger.warning(f"Error processing email {idx}: {e}")
+                # Continue processing other emails
+                continue
+
+        if self.mbox:
+            self.mbox.close()
+
+    def _parse_single_email(self, message: Message, email_id: int) -> Dict:
+        """
+        Parse a single email message.
+
+        Args:
+            message: Email message object from mailbox
+            email_id: Unique identifier for this email
+
+        Returns:
+            Dictionary containing email data
+        """
+        # Extract basic email metadata
+        subject = utils.decode_mime_words(
+            message.get('Subject', '(No Subject)')
+        )
+        from_addr = utils.decode_mime_words(
+            message.get('From', 'Unknown')
+        )
+        to_addr = utils.decode_mime_words(
+            message.get('To', 'Unknown')
+        )
+        date = message.get('Date', 'Unknown Date')
+
+        # Extract name from email addresses
+        from_name = utils.extract_name_from_email(from_addr)
+
+        # Get email body
+        body_text, body_html, is_html = self._extract_email_body(message)
+
+        # Create preview (first N chars of plain text)
+        preview = body_text[:config.EMAIL_PREVIEW_LENGTH].replace('\n', ' ').strip()
+        if len(body_text) > config.EMAIL_PREVIEW_LENGTH:
+            preview += '...'
+
+        # Store email data
+        email_data = {
+            'id': email_id,
+            'subject': subject,
+            'from': from_addr,
+            'from_name': from_name,
+            'to': to_addr,
+            'date': date,
+            'body_text': body_text,
+            'body_html': body_html,
+            'is_html': is_html,
+            'preview': preview,
+            'attachments': []  # Will be populated if save_attachments is called
+        }
+
+        return email_data
+
+    def _extract_email_body(self, msg: Message) -> tuple:
         """
         Extract the body from an email message.
         Handles both plain text and HTML emails.
-        
+
         Args:
             msg: Email message object
-            
+
         Returns:
             Tuple of (body_text, body_html, is_html)
         """
         body_text = ""
         body_html = ""
-        
+
         if msg.is_multipart():
             for part in msg.walk():
                 content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition"))
-                
+                content_disposition = str(part.get("Content-Disposition", ""))
+
                 # Skip attachments
                 if "attachment" in content_disposition:
                     continue
-                
+
                 try:
                     payload = part.get_payload(decode=True)
                     if not payload:
                         continue
-                    
-                    decoded_payload = payload.decode('utf-8', errors='ignore')
-                    
+
+                    # Try to decode payload
+                    try:
+                        decoded_payload = payload.decode(config.DEFAULT_ENCODING, errors='ignore')
+                    except (UnicodeDecodeError, AttributeError):
+                        try:
+                            decoded_payload = payload.decode(config.FALLBACK_ENCODING, errors='ignore')
+                        except (UnicodeDecodeError, AttributeError):
+                            logger.debug(f"Failed to decode email part with type {content_type}")
+                            continue
+
                     if content_type == "text/plain":
                         body_text = decoded_payload
                     elif content_type == "text/html":
                         body_html = decoded_payload
-                except:
-                    pass
+
+                except Exception as e:
+                    logger.debug(f"Error extracting email part: {e}")
+                    continue
         else:
+            # Non-multipart message
             try:
                 payload = msg.get_payload(decode=True)
                 if payload:
-                    body_text = payload.decode('utf-8', errors='ignore')
-            except:
+                    try:
+                        body_text = payload.decode(config.DEFAULT_ENCODING, errors='ignore')
+                    except (UnicodeDecodeError, AttributeError):
+                        body_text = payload.decode(config.FALLBACK_ENCODING, errors='ignore')
+            except Exception as e:
+                logger.debug(f"Error extracting single-part email body: {e}")
                 body_text = str(msg.get_payload())
-        
+
         # Determine which body to use
         # Prefer plain text for preview, but keep HTML if available
         if body_html:
-            return body_text or self._strip_html_tags(body_html), body_html, True
-        
+            return body_text or utils.strip_html_tags(body_html), body_html, True
+
         return body_text, body_text, False
-    
-    def _strip_html_tags(self, html_text):
-        """
-        Strip HTML tags for plain text preview.
-        
-        Args:
-            html_text: HTML string
-            
-        Returns:
-            Plain text string
-        """
-        # Remove script and style elements
-        html_text = re.sub(r'<script[^>]*>.*?</script>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
-        html_text = re.sub(r'<style[^>]*>.*?</style>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Remove HTML tags
-        text = re.sub(r'<[^>]+>', '', html_text)
-        
-        # Clean up whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        return text.strip()
-    
-    def save_attachments(self, msg, email_id, attachments_dir):
+
+    def save_attachments(
+        self,
+        msg: Message,
+        email_id: int,
+        attachments_dir: Path
+    ) -> List[Dict]:
         """
         Save email attachments to disk.
-        
+
         Args:
             msg: Email message object
             email_id: Unique ID for this email
             attachments_dir: Directory to save attachments
-            
+
         Returns:
             List of attachment info dictionaries
         """
         attachments = []
-        
+
         if not msg.is_multipart():
             return attachments
-        
+
         for part in msg.walk():
-            content_disposition = str(part.get("Content-Disposition"))
-            
+            content_disposition = str(part.get("Content-Disposition", ""))
+
             if "attachment" not in content_disposition:
                 continue
-            
+
             filename = part.get_filename()
             if not filename:
                 continue
-            
-            filename = self.decode_mime_words(filename)
-            # Sanitize filename (remove dangerous characters)
-            filename = re.sub(r'[^\w\s.-]', '_', filename)
-            
+
+            # Decode and sanitize filename
+            filename = utils.decode_mime_words(filename)
+            filename = utils.sanitize_filename(filename)
+
             # Create email-specific attachment folder
             email_attach_dir = Path(attachments_dir) / str(email_id)
             email_attach_dir.mkdir(parents=True, exist_ok=True)
-            
+
             filepath = email_attach_dir / filename
-            
+
             try:
                 payload = part.get_payload(decode=True)
                 if payload:
                     with open(filepath, 'wb') as f:
                         f.write(payload)
-                    
+
+                    file_size = len(payload)
                     attachments.append({
                         'filename': filename,
-                        'path': f'attachments/{email_id}/{filename}',
-                        'size': len(payload)
+                        'path': f'{config.ATTACHMENTS_DIRNAME}/{email_id}/{filename}',
+                        'size': file_size
                     })
+
+                    logger.debug(
+                        f"Saved attachment: {filename} "
+                        f"({utils.format_file_size(file_size)})"
+                    )
+
+            except IOError as e:
+                logger.warning(f"Could not save attachment {filename}: {e}")
             except Exception as e:
-                print(f"  ⚠️  Could not save attachment {filename}: {e}")
-        
+                logger.error(f"Unexpected error saving attachment {filename}: {e}")
+
         return attachments
-    
-    def parse_all_emails(self):
-        """
-        Parse all emails from the MBOX file.
-        
-        Returns:
-            List of email data dictionaries
-        """
-        try:
-            self.mbox = mailbox.mbox(self.mbox_path)
-            total_emails = len(self.mbox)
-            print(f"📊 Found {total_emails} emails in MBOX file")
-            print()
-        except Exception as e:
-            print(f"❌ Error opening MBOX file: {e}")
-            return []
-        
-        emails_data = []
-        
-        for idx, message in enumerate(self.mbox, 1):
-            try:
-                # Extract basic email metadata
-                subject = self.decode_mime_words(
-                    message.get('Subject', '(No Subject)')
-                )
-                from_addr = self.decode_mime_words(
-                    message.get('From', 'Unknown')
-                )
-                to_addr = self.decode_mime_words(
-                    message.get('To', 'Unknown')
-                )
-                date = message.get('Date', 'Unknown Date')
-                
-                # Extract name from email addresses
-                from_name = self.extract_name_from_email(from_addr)
-                
-                # Get email body
-                body_text, body_html, is_html = self.get_email_body(message)
-                
-                # Create preview (first 200 chars of plain text)
-                preview = body_text[:200].replace('\n', ' ').strip()
-                if len(body_text) > 200:
-                    preview += '...'
-                
-                # Store email data
-                email_data = {
-                    'id': idx,
-                    'subject': subject,
-                    'from': from_addr,
-                    'from_name': from_name,
-                    'to': to_addr,
-                    'date': date,
-                    'body_text': body_text,
-                    'body_html': body_html,
-                    'is_html': is_html,
-                    'preview': preview,
-                    'attachments': []  # Will be populated if needed
-                }
-                
-                emails_data.append(email_data)
-                
-                # Progress indicator
-                if idx % 100 == 0 or idx == total_emails:
-                    progress = (idx / total_emails) * 100
-                    print(f"⏳ Processing: {idx}/{total_emails} ({progress:.1f}%) - {subject[:50]}")
-            
-            except Exception as e:
-                print(f"⚠️  Error processing email {idx}: {e}")
-                continue
-        
-        return emails_data
