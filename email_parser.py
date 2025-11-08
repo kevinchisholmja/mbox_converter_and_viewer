@@ -219,8 +219,25 @@ class EmailParser:
                 body_text = str(msg.get_payload())
 
         # Determine which body to use
-        # Prefer plain text for preview, but keep HTML if available
+        # Check if body_text contains HTML even if there's no explicit HTML part
+        # This handles cases where promotional emails have HTML in the text/plain part
+        is_html_content = False
+        
         if body_html:
+            # Explicit HTML part exists
+            is_html_content = True
+        elif body_text:
+            # Check if the "plain text" actually contains HTML markup
+            # Look for common HTML tags
+            html_indicators = ['<html', '<head', '<body', '<div', '<table', '<style', '<!DOCTYPE']
+            text_lower = body_text.lower()
+            if any(indicator in text_lower for indicator in html_indicators):
+                # This is actually HTML, not plain text
+                body_html = body_text
+                is_html_content = True
+                logger.debug("Detected HTML content in text/plain part")
+        
+        if is_html_content:
             return body_text or utils.strip_html_tags(body_html), body_html, True
 
         return body_text, body_text, False
