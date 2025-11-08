@@ -21,16 +21,18 @@ class EmailParser:
     Supports streaming for memory-efficient processing of large mailboxes.
     """
 
-    def __init__(self, mbox_path: str):
+    def __init__(self, mbox_path: str, attachments_dir: Optional[Path] = None):
         """
         Initialize the parser with an MBOX file path.
 
         Args:
             mbox_path: Path to the MBOX file
+            attachments_dir: Optional directory to save attachments
         """
         self.mbox_path = mbox_path
         self.mbox = None
         self.total_emails = 0
+        self.attachments_dir = Path(attachments_dir) if attachments_dir else None
 
     def get_email_count(self) -> int:
         """
