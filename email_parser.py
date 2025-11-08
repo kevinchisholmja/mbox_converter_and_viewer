@@ -211,9 +211,17 @@ class EmailParser:
                 payload = msg.get_payload(decode=True)
                 if payload:
                     try:
-                        body_text = payload.decode(config.DEFAULT_ENCODING, errors='ignore')
+                        decoded_text = payload.decode(config.DEFAULT_ENCODING, errors='ignore')
                     except (UnicodeDecodeError, AttributeError):
-                        body_text = payload.decode(config.FALLBACK_ENCODING, errors='ignore')
+                        decoded_text = payload.decode(config.FALLBACK_ENCODING, errors='ignore')
+                    
+                    # Check content type to determine if it's HTML or plain text
+                    content_type = msg.get_content_type()
+                    if content_type == "text/html":
+                        body_html = decoded_text
+                        body_text = ""  # Will be extracted from HTML later
+                    else:
+                        body_text = decoded_text
             except Exception as e:
                 logger.debug(f"Error extracting single-part email body: {e}")
                 body_text = str(msg.get_payload())
