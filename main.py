@@ -79,7 +79,9 @@ def main():
 
     # Step 1: Parse emails from MBOX
     logger.info("Step 1: Parsing MBOX file...")
-    parser = EmailParser(mbox_file)
+    # Set up attachments directory
+    attachments_dir = Path(output_directory) / config.ATTACHMENTS_DIRNAME
+    parser = EmailParser(mbox_file, attachments_dir)
 
     try:
         emails_data = parser.parse_all_emails()
