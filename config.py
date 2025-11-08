@@ -17,6 +17,7 @@ STRIP_BASE64_IMAGES = True
 STRIP_INLINE_STYLES = True
 STRIP_EXTERNAL_STYLESHEETS = True
 STRIP_TRACKING_PIXELS = True
+MINIFY_HTML = True  # Remove unnecessary whitespace and compress HTML
 MAX_STYLE_ATTRIBUTE_LENGTH = 500  # Characters
 
 # Batch processing for memory efficiency
