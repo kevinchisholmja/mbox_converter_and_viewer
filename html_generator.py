@@ -450,5 +450,7 @@ class HTMLGenerator:
                 logger.info(f"  - Removed {stats['scripts_removed']} script tags")
             if stats['tracking_pixels_removed'] > 0:
                 logger.info(f"  - Removed {stats['tracking_pixels_removed']} tracking pixels")
+            if stats['html_minified'] > 0:
+                logger.info(f"  - Minified {stats['html_minified']} HTML email(s)")
 
         logger.info("HTML generation complete!")

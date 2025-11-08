@@ -23,7 +23,8 @@ class HTMLSanitizer:
             'external_images_removed': 0,
             'base64_images_removed': 0,
             'styles_removed': 0,
-            'tracking_pixels_removed': 0
+            'tracking_pixels_removed': 0,
+            'html_minified': 0
         }
 
     def sanitize(self, html_content: str) -> str:
@@ -59,6 +60,10 @@ class HTMLSanitizer:
 
         if config.STRIP_TRACKING_PIXELS:
             html_content = self._remove_tracking_pixels(html_content)
+
+        # Minify HTML to reduce file size
+        if config.MINIFY_HTML:
+            html_content = self._minify_html(html_content)
 
         return html_content
 
@@ -237,6 +242,103 @@ class HTMLSanitizer:
         if original_count > 0:
             self.stats['tracking_pixels_removed'] += original_count
             logger.debug(f"Removed {original_count} tracking pixels")
+
+        return html_content
+
+    def _minify_html(self, html_content: str) -> str:
+        """
+        Minify HTML by removing unnecessary whitespace and compressing content.
+        Preserves conditional comments for Outlook/MSO compatibility.
+
+        Args:
+            html_content: HTML content to minify
+
+        Returns:
+            Minified HTML
+        """
+        if not html_content or len(html_content) < 1000:
+            # Don't bother minifying small HTML
+            return html_content
+
+        original_size = len(html_content)
+
+        # Step 1: Protect conditional comments by temporarily replacing them
+        conditional_comments = []
+        def save_conditional_comment(match):
+            conditional_comments.append(match.group(0))
+            return f'___CONDITIONAL_COMMENT_{len(conditional_comments) - 1}___'
+
+        # Preserve <!--[if ...]>...<![endif]--> blocks
+        html_content = re.sub(
+            r'<!--\[if[^\]]*\]>.*?<!\[endif\]-->',
+            save_conditional_comment,
+            html_content,
+            flags=re.DOTALL | re.IGNORECASE
+        )
+
+        # Step 2: Remove regular HTML comments (but not conditional ones)
+        # Match comments that are NOT conditional and NOT our placeholders
+        def should_remove_comment(match):
+            comment = match.group(0)
+            # Keep conditional comments and our placeholders
+            if comment.startswith('<!--[if') or comment.startswith('<!--<![endif]') or 'CONDITIONAL_COMMENT' in comment:
+                return comment
+            return ''
+
+        html_content = re.sub(
+            r'<!--.*?-->',
+            should_remove_comment,
+            html_content,
+            flags=re.DOTALL
+        )
+
+        # Step 3: Minify CSS in style blocks
+        def minify_style_block(match):
+            css = match.group(1)
+            # Remove CSS comments
+            css = re.sub(r'/\*.*?\*/', '', css, flags=re.DOTALL)
+            # Remove unnecessary whitespace in CSS
+            css = re.sub(r'\s+', ' ', css)
+            css = re.sub(r'\s*([{}:;,>+~])\s*', r'\1', css)
+            css = re.sub(r';\s*}', '}', css)
+            return f'<style>{css.strip()}</style>'
+
+        html_content = re.sub(
+            r'<style[^>]*>(.*?)</style>',
+            minify_style_block,
+            html_content,
+            flags=re.DOTALL | re.IGNORECASE
+        )
+
+        # Step 4: Remove whitespace between tags
+        html_content = re.sub(r'>\s+<', '><', html_content)
+
+        # Step 5: Remove leading/trailing whitespace on lines
+        html_content = re.sub(r'^\s+', '', html_content, flags=re.MULTILINE)
+        html_content = re.sub(r'\s+$', '', html_content, flags=re.MULTILINE)
+
+        # Step 6: Collapse multiple spaces into one (but preserve single spaces in content)
+        html_content = re.sub(r' {2,}', ' ', html_content)
+
+        # Step 7: Remove newlines and consolidate
+        html_content = re.sub(r'\n+', '', html_content)
+
+        # Step 8: Restore conditional comments
+        for idx, comment in enumerate(conditional_comments):
+            html_content = html_content.replace(
+                f'___CONDITIONAL_COMMENT_{idx}___',
+                comment
+            )
+
+        # Track statistics
+        final_size = len(html_content)
+        if final_size < original_size:
+            self.stats['html_minified'] += 1
+            reduction = ((original_size - final_size) / original_size) * 100
+            logger.debug(
+                f"Minified HTML from {original_size} to {final_size} bytes "
+                f"({reduction:.1f}% reduction)"
+            )
 
         return html_content
 
