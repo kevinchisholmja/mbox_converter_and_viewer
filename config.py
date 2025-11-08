@@ -17,6 +17,8 @@ STRIP_BASE64_IMAGES = True
 STRIP_INLINE_STYLES = True
 STRIP_EXTERNAL_STYLESHEETS = True
 STRIP_TRACKING_PIXELS = True
+STRIP_CSS_CLASSES = True  # Remove class attributes (promotional email bloat)
+STRIP_MSO_ELEMENTS = True  # Remove Microsoft Office specific elements
 MINIFY_HTML = True  # Remove unnecessary whitespace and compress HTML
 MAX_STYLE_ATTRIBUTE_LENGTH = 500  # Characters
 
