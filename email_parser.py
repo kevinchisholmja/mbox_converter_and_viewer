@@ -144,6 +144,14 @@ class EmailParser:
         if len(body_text) > config.EMAIL_PREVIEW_LENGTH:
             preview += '...'
 
+        # Save attachments if directory is configured
+        attachments = []
+        if self.attachments_dir:
+            try:
+                attachments = self.save_attachments(message, email_id, self.attachments_dir)
+            except Exception as e:
+                logger.warning(f"Failed to save attachments for email {email_id}: {e}")
+
         # Store email data
         email_data = {
             'id': email_id,
@@ -156,7 +164,7 @@ class EmailParser:
             'body_html': body_html,
             'is_html': is_html,
             'preview': preview,
-            'attachments': []  # Will be populated if save_attachments is called
+            'attachments': attachments
         }
 
         return email_data
