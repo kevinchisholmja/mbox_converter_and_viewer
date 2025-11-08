@@ -61,6 +61,13 @@ class HTMLSanitizer:
         if config.STRIP_TRACKING_PIXELS:
             html_content = self._remove_tracking_pixels(html_content)
 
+        # Additional aggressive cleanup for promotional emails
+        if config.STRIP_CSS_CLASSES:
+            html_content = self._remove_css_classes(html_content)
+
+        if config.STRIP_MSO_ELEMENTS:
+            html_content = self._remove_mso_elements(html_content)
+
         # Minify HTML to reduce file size
         if config.MINIFY_HTML:
             html_content = self._minify_html(html_content)
@@ -169,7 +176,7 @@ class HTMLSanitizer:
 
     def _strip_excessive_styles(self, html_content: str) -> str:
         """
-        Remove inline style blocks and excessive style attributes.
+        Remove inline style blocks and ALL style attributes.
         Gmail emails often have thousands of lines of inline CSS.
         """
         # Remove <style> blocks entirely
@@ -185,20 +192,19 @@ class HTMLSanitizer:
             self.stats['styles_removed'] += 1
             logger.debug("Removed inline <style> blocks")
 
-        # Truncate overly long style attributes
-        def truncate_style(match):
-            full_attr = match.group(0)
-            if len(full_attr) > config.MAX_STYLE_ATTRIBUTE_LENGTH:
-                # Keep just basic styles
-                return 'style="max-width:100%;word-wrap:break-word;"'
-            return full_attr
-
+        # Remove ALL style attributes for maximum cleanup
+        # For promotional emails, styling isn't critical for readability
+        style_count = len(re.findall(r'style="[^"]*"', html_content, re.IGNORECASE))
+        
         html_content = re.sub(
-            r'style="[^"]*"',
-            truncate_style,
+            r'\s*style="[^"]*"',
+            '',
             html_content,
             flags=re.IGNORECASE
         )
+
+        if style_count > 0:
+            logger.debug(f"Removed {style_count} inline style attributes")
 
         return html_content
 
@@ -242,6 +248,43 @@ class HTMLSanitizer:
         if original_count > 0:
             self.stats['tracking_pixels_removed'] += original_count
             logger.debug(f"Removed {original_count} tracking pixels")
+
+        return html_content
+
+    def _remove_css_classes(self, html_content: str) -> str:
+        """
+        Remove all CSS class attributes.
+        Promotional emails use excessive classes that bloat HTML.
+        """
+        class_count = len(re.findall(r'class="[^"]*"', html_content, re.IGNORECASE))
+        
+        html_content = re.sub(
+            r'\s*class="[^"]*"',
+            '',
+            html_content,
+            flags=re.IGNORECASE
+        )
+
+        if class_count > 0:
+            logger.debug(f"Removed {class_count} CSS class attributes")
+
+        return html_content
+
+    def _remove_mso_elements(self, html_content: str) -> str:
+        """
+        Remove Microsoft Office (Outlook) specific elements and attributes.
+        These include mso-* styles, XML namespaces, and conditional comments.
+        """
+        # Remove data-ogsb and other tracking attributes
+        html_content = re.sub(r'\s*data-[a-z-]+="[^"]*"', '', html_content, flags=re.IGNORECASE)
+        
+        # Remove role and aria attributes (not needed for archived emails)
+        html_content = re.sub(r'\s*(?:role|aria-[a-z]+)="[^"]*"', '', html_content, flags=re.IGNORECASE)
+        
+        # Remove lang and dir attributes from inner elements (keep on html/body)
+        html_content = re.sub(r'<(?!html|body)([a-z]+)([^>]*)\s+(?:lang|dir)="[^"]*"', r'<\1\2', html_content, flags=re.IGNORECASE)
+
+        logger.debug("Removed MSO and tracking attributes")
 
         return html_content
 
